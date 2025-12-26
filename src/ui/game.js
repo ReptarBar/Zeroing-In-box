@@ -31,8 +31,11 @@ if (typeof ctx.roundRect !== 'function') {
 const statusLine = document.getElementById('statusLine');
 const btnReview = document.getElementById('btnReview');
 const btnReload = document.getElementById('btnReload');
+const stage = document.querySelector('.stage');
 const toast = document.getElementById('toast');
 const toastText = document.getElementById('toastText');
+const hoverTooltip = document.getElementById('hoverTooltip');
+const hoverText = document.getElementById('hoverText');
 const errorPanel = document.getElementById('errorPanel');
 const errorText = document.getElementById('errorText');
 const btnTryInbox = document.getElementById('btnTryInbox');
@@ -63,10 +66,15 @@ const state = {
     offsetX: 140,
     offsetY: 70,
     dir: -1,
-    speed: 42,
-    stepDown: 22,
+    speed: 30,
+    stepDown: 16,
     boundsPadding: 16
   }
+};
+
+const hoverState = {
+  timer: null,
+  shipId: null
 };
 
 // --- Audio (no asset files) ---
@@ -133,6 +141,22 @@ function showError(text) {
   statusLine.textContent = 'Error, could not load messages.';
 }
 
+function showHover(text, clientX) {
+  if (!text) {
+    hoverTooltip.hidden = true;
+    hoverState.shipId = null;
+    clearTimeout(hoverState.timer);
+    return;
+  }
+  const rect = stage?.getBoundingClientRect?.();
+  const localX = rect
+    ? Math.max(20, Math.min(rect.width - 20, clientX - rect.left))
+    : Math.max(20, Math.min(canvas.width - 20, clientX || 0));
+  hoverText.textContent = text;
+  hoverTooltip.hidden = false;
+  hoverTooltip.style.left = `${localX}px`;
+}
+
 function clearError() {
   errorPanel.hidden = true;
 }
@@ -177,7 +201,7 @@ function buildShips() {
   state.fleet.offsetX = 140;
   state.fleet.offsetY = 70;
   state.fleet.dir = -1; // left first
-  state.fleet.speed = 42;
+  state.fleet.speed = 30;
 }
 
 function fleetBounds() {
@@ -370,7 +394,8 @@ function tick(now) {
   const stagedCount = state.ships.filter(s => s.alive && s.staged).length;
   const remaining = Math.max(1, aliveCount - stagedCount);
 
-  const speedBoost = 1 + (1 - remaining / Math.max(1, aliveCount)) * 0.8;
+  // Ease speed up more gently so the fleet stays on screen longer.
+  const speedBoost = 1 + (1 - remaining / Math.max(1, aliveCount)) * 0.45;
   const speed = state.fleet.speed * speedBoost;
 
   const bounds = fleetBounds();
@@ -499,6 +524,30 @@ function updateStatusCounts() {
 
 canvas.addEventListener('mousemove', (ev) => {
   state.mouse = canvasToLocal(ev);
+
+  const ship = shipAtPoint(state.mouse.x, state.mouse.y);
+  if (ship && hoverState.shipId === ship.message.id && !hoverTooltip.hidden) {
+    const from = (ship.message.author || '').replace(/\s+/g, ' ').trim();
+    const subject = (ship.message.subject || '').replace(/\s+/g, ' ').trim();
+    showHover(`${from} · ${subject}`, ev.clientX);
+    return;
+  }
+
+  clearTimeout(hoverState.timer);
+  hoverState.timer = setTimeout(() => {
+    if (!ship) {
+      showHover('', 0);
+      return;
+    }
+    const from = (ship.message.author || '').replace(/\s+/g, ' ').trim();
+    const subject = (ship.message.subject || '').replace(/\s+/g, ' ').trim();
+    hoverState.shipId = ship.message.id;
+    showHover(`${from} · ${subject}`, ev.clientX);
+  }, 420);
+});
+
+canvas.addEventListener('mouseleave', () => {
+  showHover('', 0);
 });
 
 canvas.addEventListener('click', async (ev) => {
@@ -732,6 +781,14 @@ async function init() {
         s.staged = true;
         state.staged.add(s.message.id);
       }
+    }
+
+    // Briefly show hover text for the first ship so users notice hover affordance.
+    if (state.ships[0]) {
+      const from = (state.ships[0].message.author || '').replace(/\s+/g, ' ').trim();
+      const subject = (state.ships[0].message.subject || '').replace(/\s+/g, ' ').trim();
+      showHover(`${from} · ${subject}`, canvas.width / 2);
+      setTimeout(() => showHover('', 0), 2000);
     }
 
     updateStatusCounts();

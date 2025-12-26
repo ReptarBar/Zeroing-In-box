@@ -8,6 +8,8 @@
 const GAME_URL = "src/ui/game.html";
 const DEFAULT_WAVE_SIZE = 30;
 const STAGING_KEY = "inboxLaserStaging";
+const TRASH_CACHE = new Map();
+let unifiedTrash = null;
 
 /** @typedef {{ id:number, author:string, subject:string, date:number, folderId:string }} ShipMessage */
 
@@ -81,6 +83,7 @@ async function loadWave1({ folderId } = {}) {
 async function getNewestMessagesInFolder(folderId, limit) {
   const day = 24 * 60 * 60 * 1000;
   const windows = [3, 7, 14, 30, 90, 365];
+  let newest = [];
 
   for (const days of windows) {
     const fromDate = new Date(Date.now() - days * day);
@@ -92,34 +95,52 @@ async function getNewestMessagesInFolder(folderId, limit) {
         // responsive for large folders).
         messagesPerPage: 200,
         autoPaginationTimeout: 250
-      })
+      }),
+      limit * 3
     );
 
-    if (all.length >= limit || days === windows[windows.length - 1]) {
-      all.sort((a, b) => {
-        const da = a.date ? new Date(a.date).getTime() : 0;
-        const db = b.date ? new Date(b.date).getTime() : 0;
-        return db - da;
-      });
-      return all.slice(0, limit);
-    }
+    newest = all;
+
+    if (all.length >= limit) break;
   }
 
-  return [];
+  // Fallback: if our date-window strategy could not gather enough messages,
+  // fetch a capped unfiltered list and sort locally. This avoids returning only
+  // a handful of ships in profiles where fromDate filters are sparse.
+  if (newest.length < limit) {
+    newest = await collectAllMessages(
+      browser.messages.query({
+        folderId,
+        messagesPerPage: 400,
+        autoPaginationTimeout: 800
+      }),
+      limit * 4
+    );
+  }
+
+  newest.sort((a, b) => {
+    const da = a.date ? new Date(a.date).getTime() : 0;
+    const db = b.date ? new Date(b.date).getTime() : 0;
+    return db - da;
+  });
+
+  return newest.slice(0, limit);
 }
 
 /**
  * Collect all pages from a MessageList promise.
  * @param {Promise<any>} listPromise
+ * @param {number} cap
  */
-async function collectAllMessages(listPromise) {
+async function collectAllMessages(listPromise, cap = Infinity) {
   /** @type {any[]} */
   const out = [];
   let page = await listPromise;
   if (Array.isArray(page?.messages)) out.push(...page.messages);
-  while (page?.id) {
+  while (page?.id && out.length < cap) {
     page = await browser.messages.continueList(page.id);
     if (Array.isArray(page?.messages)) out.push(...page.messages);
+    else break;
   }
   return out;
 }
@@ -186,14 +207,99 @@ async function moveToTrashViaDelete(messageIds) {
 }
 
 async function moveToTrashViaMove(messageIds) {
-  const trash = await browser.folders.getUnifiedFolder("trash");
+  const trash = await getUnifiedTrash();
+  if (!trash) throw new Error("Could not locate a Trash folder.");
   await browser.messages.move(messageIds, trash.id, { isUserAction: true });
+}
+
+async function getUnifiedTrash() {
+  if (unifiedTrash) return unifiedTrash;
+  try {
+    unifiedTrash = await browser.folders.getUnifiedFolder("trash");
+    return unifiedTrash;
+  } catch (_) {
+    return null;
+  }
+}
+
+function findFolderById(folders, id) {
+  for (const f of folders || []) {
+    if (f.id === id) return f;
+    const nested = findFolderById(f.subFolders, id);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function findFolderByType(folders, type) {
+  for (const f of folders || []) {
+    if (f.type === type) return f;
+    const nested = findFolderByType(f.subFolders, type);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+async function resolveTrashForFolder(folderId) {
+  if (TRASH_CACHE.has(folderId)) return TRASH_CACHE.get(folderId);
+
+  const unified = await getUnifiedTrash();
+  if (unified) {
+    TRASH_CACHE.set(folderId, unified);
+    return unified;
+  }
+
+  const folder = await browser.folders.get(folderId, false).catch(() => null);
+  const accountId = folder?.accountId;
+  const accounts = await browser.accounts.list();
+
+  for (const acct of accounts) {
+    if (accountId && acct.id !== accountId) continue;
+    const belongs = accountId ? true : !!findFolderById(acct.folders, folderId);
+    if (!belongs) continue;
+    const trash = findFolderByType(acct.folders, "trash");
+    if (trash) {
+      TRASH_CACHE.set(folderId, trash);
+      return trash;
+    }
+  }
+
+  return null;
+}
+
+async function moveMessagesToResolvedTrash(messages) {
+  const grouped = new Map();
+  const failed = [];
+  const moved = [];
+
+  for (const msg of messages) {
+    const dest = await resolveTrashForFolder(msg.folderId);
+    if (!dest?.id) {
+      failed.push({ id: msg.id, error: "No Trash folder available" });
+      continue;
+    }
+    const bucket = grouped.get(dest.id) || { ids: [] };
+    bucket.ids.push(msg.id);
+    grouped.set(dest.id, bucket);
+  }
+
+  for (const [trashId, bucket] of grouped) {
+    try {
+      await browser.messages.move(bucket.ids, trashId, { isUserAction: true });
+      moved.push(...bucket.ids);
+    } catch (err) {
+      failed.push(...bucket.ids.map(id => ({ id, error: String(err?.message || err) })));
+    }
+  }
+
+  return { moved, failed };
 }
 
 async function trashStaged({ folderId }) {
   const staging = await getStaging();
   const bucket = staging.byFolder?.[folderId];
   const ids = bucket?.ids || [];
+  const meta = bucket?.meta || {};
 
   if (!ids.length) {
     return { ok: true, trashed: [], failed: [] };
@@ -205,17 +311,21 @@ async function trashStaged({ folderId }) {
   // Do in chunks to avoid large operations.
   const chunks = chunk(ids, 100);
   for (const chunkIds of chunks) {
+    const chunkMessages = chunkIds.map(id => ({ id, folderId: meta[id]?.folderId || folderId }));
     try {
       await moveToTrashViaDelete(chunkIds);
       trashed.push(...chunkIds);
+      continue;
     } catch (err) {
-      // Fallback to explicit move.
-      try {
-        await moveToTrashViaMove(chunkIds);
-        trashed.push(...chunkIds);
-      } catch (err2) {
-        failed.push(...chunkIds.map(id => ({ id, error: String(err2?.message || err2) })));
-      }
+      // delete failed, fall through to move
+    }
+
+    try {
+      const moveRes = await moveMessagesToResolvedTrash(chunkMessages);
+      trashed.push(...moveRes.moved);
+      failed.push(...moveRes.failed);
+    } catch (err2) {
+      failed.push(...chunkIds.map(id => ({ id, error: String(err2?.message || err2) })));
     }
   }
 
