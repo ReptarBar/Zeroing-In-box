@@ -1,0 +1,14 @@
+{
+  "extensionName": {
+    "message": "Inbox Laser",
+    "description": "Extension name."
+  },
+  "extensionDescription": {
+    "message": "Space-Invaders style inbox cleanup with safe staging and Trash-first deletion.",
+    "description": "Extension description."
+  },
+  "actionTitle": {
+    "message": "Open Inbox Laser",
+    "description": "Toolbar button title."
+  }
+}
