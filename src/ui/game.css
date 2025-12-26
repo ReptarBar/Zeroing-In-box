@@ -133,6 +133,20 @@ body {
   padding: 14px;
 }
 
+.panel--hover {
+  top: 80px;
+  padding: 10px 12px;
+  width: min(680px, calc(100% - 40px));
+  left: 0;
+  transform: none;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.panel--hover[hidden] {
+  opacity: 0;
+}
+
 .panel__title {
   font-size: 14px;
   font-weight: 800;
