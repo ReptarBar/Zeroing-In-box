@@ -11,6 +11,61 @@ const STAGING_KEY = "inboxLaserStaging";
 const TRASH_CACHE = new Map();
 let unifiedTrash = null;
 
+const TO_DELETE_TAG_KEY = "To-Delete";
+const TO_DELETE_TAG_LABEL = "To-Delete";
+const TO_DELETE_TAG_COLOR = "#e34d55";
+let toDeleteTagReady = false;
+
+async function listTags() {
+  try {
+    // Thunderbird 128+ namespace for tag helpers.
+    return await browser.messages.tags.list();
+  } catch (_) {
+    // Legacy fallback for environments that expose listTags at the root.
+    try {
+      return await browser.messages.listTags();
+    } catch {
+      return [];
+    }
+  }
+}
+
+async function createToDeleteTag() {
+  // Prefer the namespaced tag API; fall back to legacy createTag signature.
+  try {
+    await browser.messages.tags.create({
+      key: TO_DELETE_TAG_KEY,
+      tag: TO_DELETE_TAG_LABEL,
+      color: TO_DELETE_TAG_COLOR
+    });
+    return;
+  } catch (_) {
+    // Ignore and try legacy shape.
+  }
+
+  try {
+    await browser.messages.createTag(TO_DELETE_TAG_KEY, TO_DELETE_TAG_LABEL, TO_DELETE_TAG_COLOR);
+  } catch (_) {
+    // Best-effort: failure is non-fatal; tagging will simply be skipped.
+  }
+}
+
+async function ensureToDeleteTag() {
+  if (toDeleteTagReady) return true;
+  const tags = await listTags();
+  const exists = tags?.some?.((t) => t?.key === TO_DELETE_TAG_KEY);
+  if (exists) {
+    toDeleteTagReady = true;
+    return true;
+  }
+
+  await createToDeleteTag();
+  const updated = await listTags();
+  const created = updated?.some?.((t) => t?.key === TO_DELETE_TAG_KEY);
+  toDeleteTagReady = !!created;
+  return toDeleteTagReady;
+}
+
 /** @typedef {{ id:number, author:string, subject:string, date:number, folderId:string }} ShipMessage */
 
 async function openGameWindow() {
@@ -212,6 +267,27 @@ async function moveToTrashViaMove(messageIds) {
   await browser.messages.move(messageIds, trash.id, { isUserAction: true });
 }
 
+async function tagMessagesForDeletion(messageIds) {
+  const tagged = [];
+  const failed = [];
+
+  if (!messageIds?.length) return { tagged, failed };
+
+  const ready = await ensureToDeleteTag().catch(() => false);
+  if (!ready) return { tagged, failed };
+
+  for (const id of messageIds) {
+    try {
+      await browser.messages.update(id, { addTags: [TO_DELETE_TAG_KEY] });
+      tagged.push(id);
+    } catch (err) {
+      failed.push({ id, error: String(err?.message || err) });
+    }
+  }
+
+  return { tagged, failed };
+}
+
 async function getUnifiedTrash() {
   if (unifiedTrash) return unifiedTrash;
   try {
@@ -307,11 +383,16 @@ async function trashStaged({ folderId }) {
 
   const failed = [];
   const trashed = [];
+  const tagFailed = [];
 
   // Do in chunks to avoid large operations.
   const chunks = chunk(ids, 100);
   for (const chunkIds of chunks) {
     const chunkMessages = chunkIds.map(id => ({ id, folderId: meta[id]?.folderId || folderId }));
+
+    const tagRes = await tagMessagesForDeletion(chunkIds);
+    tagFailed.push(...(tagRes?.failed || []));
+
     try {
       await moveToTrashViaDelete(chunkIds);
       trashed.push(...chunkIds);
@@ -335,6 +416,8 @@ async function trashStaged({ folderId }) {
     for (const id of trashed) delete bucket.meta[id];
     await setStaging(staging);
   }
+
+  failed.push(...tagFailed);
 
   return { ok: failed.length === 0, trashed, failed };
 }
