@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Inbox Laser</title>
+  <link rel="stylesheet" href="game.css" />
+</head>
+<body>
+  <header class="topbar" role="banner">
+    <div class="brand">
+      <img class="brand__icon" src="../../assets/icons/icon-32.png" width="24" height="24" alt="" />
+      <div class="brand__text">
+        <div class="brand__title">Inbox Laser</div>
+        <div class="brand__subtitle" id="statusLine">Loading Wave 1…</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn" id="btnReload" type="button">Reload</button>
+      <button class="btn btn--primary" id="btnReview" type="button">Review</button>
+    </div>
+  </header>
+
+  <main class="stage" role="main">
+    <canvas id="gameCanvas" width="800" height="600" tabindex="0" aria-label="Inbox Laser game canvas"></canvas>
+
+    <section class="panel panel--toast" id="toast" aria-live="polite" hidden>
+      <div class="panel__body" id="toastText"></div>
+    </section>
+
+    <section class="panel panel--error" id="errorPanel" role="alert" hidden>
+      <div class="panel__title">Could not load messages</div>
+      <div class="panel__body" id="errorText"></div>
+      <div class="panel__actions">
+        <button class="btn" id="btnTryInbox" type="button">Try Inbox Again</button>
+      </div>
+    </section>
+
+    <section class="modal" id="reviewModal" role="dialog" aria-modal="true" aria-label="Review staged messages" hidden>
+      <div class="modal__card">
+        <div class="modal__header">
+          <h1 class="modal__title">Scrap Yard Review</h1>
+          <button class="iconbtn" id="btnCloseReview" type="button" aria-label="Close review">✕</button>
+        </div>
+
+        <p class="modal__hint">These emails are <strong>staged</strong>. Nothing is moved until you hit <em>Send to the Scrap Yard</em>.</p>
+
+        <div class="modal__list" id="reviewList" tabindex="0"></div>
+
+        <div class="modal__footer">
+          <button class="btn" id="btnRestoreAll" type="button">Restore All</button>
+          <button class="btn" id="btnCloseReview2" type="button">Close</button>
+          <div class="spacer"></div>
+          <button class="btn btn--danger" id="btnScrap" type="button">Send to the Scrap Yard</button>
+        </div>
+
+        <p class="modal__result" id="reviewResult" hidden></p>
+      </div>
+    </section>
+  </main>
+
+  <script src="game.js"></script>
+</body>
+</html>
